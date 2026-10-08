@@ -1,11 +1,15 @@
-"""Stage 1 feature extraction: per-family provenance signals with the original (not fine-tuned) encoders.
+"""Feature extraction (Stages 1 and 2): per-family provenance signals for every image.
 
+Stage 1 uses the original encoders as D^-1; Stage 2 loads a fine-tuned D^-1 with --inv-ckpt (see
+scripts/finetune_inverse.py). The signal code is the same in both stages.
 Each family's tokenizer is shared by all its sizes, so signals are computed once per family, not per model.
 Every image (all families and outliers) is scored with the chosen family's tokenizer; see tracer/signals.py.
 Writes resumable shards to <out>/<family>/shard_XXXX.csv and a merged <out>/<family>.csv.
 
     python scripts/extract_features.py --family rar
     python scripts/extract_features.py --family var --var-iters 0
+    python scripts/extract_features.py --family rar --inv-ckpt /workspace/cache/stage2/inv/rar/final.pt \\
+        --out /workspace/cache/stage2/features
 
 Output: one row per image in build_index() order, with columns key, split, label, family, name and one
 <family>_<signal> column per signal. Rerunning skips finished shards; if the arguments (other than
@@ -22,12 +26,13 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tracer.common import CACHE, build_index, free, load_batch, load_rar_tokenizer, load_var_vae  # noqa: E402
+from tracer.inverse import load_inverse  # noqa: E402
 from tracer.signals import rar_signals, var_signals  # noqa: E402
 
 
 def main():
     """Parse arguments, score every selected image with one family's tokenizer, and write shards + merged CSV."""
-    ap = argparse.ArgumentParser(description="Compute Stage 1 provenance signals for one tokenizer family.")
+    ap = argparse.ArgumentParser(description="Compute provenance signals for one tokenizer family.")
     ap.add_argument("--family", choices=["rar", "var"], required=True, help="which family's tokenizer to use")
     ap.add_argument("--splits", nargs="+", default=["train", "val", "test"], help="data splits to score")
     ap.add_argument("--batch-size", type=int, default=64, help="images per GPU batch (may change on resume)")
@@ -36,6 +41,8 @@ def main():
     ap.add_argument("--var-lr", type=float, default=0.1, help="Algorithm 3 Adam learning rate")
     ap.add_argument("--var-init-logit", type=float, default=10.0, help="Algorithm 3 initial logit on greedy tokens")
     ap.add_argument("--limit", type=int, default=None, help="debug: only the first N images")
+    ap.add_argument("--inv-ckpt", type=Path, default=None,
+                    help="fine-tuned D^-1 checkpoint (Stage 2); default: the original encoder (Stage 1)")
     ap.add_argument("--out", type=Path, default=CACHE / "stage1", help="output directory")
     args = ap.parse_args()
 
@@ -46,9 +53,11 @@ def main():
         df = df.head(args.limit)
 
     # Record the configuration; refuse to resume shards written with different settings.
+    # inv_ckpt is recorded only when set, so Stage 1 configs written before it existed still match.
     shard_dir = args.out / args.family
     shard_dir.mkdir(parents=True, exist_ok=True)
-    cfg = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items() if k not in ("batch_size",)}
+    cfg = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()
+           if k != "batch_size" and not (k == "inv_ckpt" and v is None)}
     cfg_path = shard_dir / "config.json"
     if cfg_path.exists() and json.loads(cfg_path.read_text()) != cfg:
         sys.exit(f"{cfg_path} differs from current args; delete {shard_dir} to recompute")
@@ -61,6 +70,9 @@ def main():
     else:
         model = load_var_vae()
         fn = lambda x: var_signals(model, x, n_iters=args.var_iters, lr=args.var_lr, init_logit=args.var_init_logit)  # noqa: E731
+    if args.inv_ckpt:
+        load_inverse(model, args.family, args.inv_ckpt)  # replace the encoder by the fine-tuned D^-1
+        print(f"loaded D^-1 from {args.inv_ckpt}", flush=True)
 
     n_shards = (len(df) + args.shard_size - 1) // args.shard_size
     t0 = time.time()

@@ -6,8 +6,8 @@ Attribute each image to the image autoregressive (IAR) model that generated it, 
 
 | directory | contents | docs |
 |---|---|---|
-| [tracer/](tracer) | Python package: data index, autoencoder loaders, provenance signals, decision rule, metrics | [tracer/README.md](tracer/README.md) |
-| [scripts/](scripts) | long-running jobs (feature extraction), run in tmux | [scripts/README.md](scripts/README.md) |
+| [tracer/](tracer) | Python package: data index, autoencoder and generator loaders, provenance signals, inverse-decoder fine-tuning, decision rule, metrics | [tracer/README.md](tracer/README.md) |
+| [scripts/](scripts) | long-running jobs (feature extraction, fine-tuning data generation, inverse-decoder fine-tuning), run in tmux | [scripts/README.md](scripts/README.md) |
 | [notebooks/](notebooks) | exploration and per-stage analysis | [notebooks/README.md](notebooks/README.md) |
 
 Data, model weights, extracted features and predictions live outside the repo and are never committed.
@@ -28,7 +28,7 @@ The paths are fixed in [tracer/common.py](tracer/common.py):
 | `/workspace/cache` | features, predictions, metrics (created by the scripts) | |
 | `/workspace/hf_cache` | `HF_HOME` | |
 
-The generator weights are not used by the current code; only the two tokenizers are.
+Stage 1 uses only the two tokenizers. Stage 2 also samples the eight generators, to create fine-tuning data.
 
 Python environment: `/workspace/venv` (Python 3.12) with `torch`, `numpy`, `pandas`, `scikit-learn`, `matplotlib`, `Pillow`, plus the dependencies of the two external repos. Use it for both scripts and notebook kernels.
 
@@ -43,6 +43,18 @@ cd /workspace/iar-model-tracer
 ```
 
 This writes `/workspace/cache/stage1/{rar,var}.csv`, `submission_stage1.csv` (`image_name,label`, one row per test image) and `metrics.json`.
+
+## Stage 2: fine-tuned inverse decoder
+
+Stage 1, with each family's encoder replaced by an inverse decoder $D^{-1}$ fine-tuned on the family's own generated images (Zhao et al., Eq. 6).
+
+```bash
+# Generate (tokens, image) pairs -> fine-tune D^-1 -> features with D^-1, both families (about 2.5 h, shortened recipe)
+tmux new -s stage2 'bash scripts/run_stage2.sh'
+# Then validate the run and evaluate it: notebooks/002_stage_2.ipynb
+```
+
+Outputs go to `/workspace/cache/stage2/`: `gen/`, `inv/<family>/` (`log.csv`, `final.pt`), `features/`, `logs/`, `submission_stage2.csv` and `metrics.json`.
 
 ## Evaluation
 
