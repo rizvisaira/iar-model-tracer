@@ -5,27 +5,9 @@ Long-running jobs. Run them in tmux with the project environment, and they write
 | script | stage | does |
 |---|---|---|
 | [extract_features.py](extract_features.py) | 1, 2 | provenance signals for every image, with the original encoder (Stage 1) or a fine-tuned $D^{-1}$ (`--inv-ckpt`, Stage 2) |
-| [extract_disagreement.py](extract_disagreement.py) | 2 | compare each original encoder with its fine-tuned inverse decoder on task train/val and held-out generated images |
 | [generate_finetune_data.py](generate_finetune_data.py) | 2 | sample (tokens, image) pairs from every generator of a family |
 | [finetune_inverse.py](finetune_inverse.py) | 2 | fine-tune one family's inverse decoder $D^{-1}$ |
 | [run_stage2.sh](run_stage2.sh) | 2 | the whole Stage 2 pipeline for both families |
-
-## extract_disagreement.py
-
-Runs both families' original encoders and fine-tuned inverse decoders on task train/val images and the last 100
-generated samples per model (the same holdout defined by `finetune_inverse.py`). It reuses Stage 2 image loading,
-encoding, tokenizer loading, checkpoint loading, and generated-data splitting helpers.
-
-```bash
-/workspace/venv/bin/python scripts/extract_disagreement.py
-# Small diagnostic run (8 images per split):
-/workspace/venv/bin/python scripts/extract_disagreement.py --limit 8 --out /tmp/disagreement_dryrun
-```
-
-Outputs default to `/workspace/features/disagreement_{train,val,generated_heldout}.npz`. Archives contain metadata,
-PNG/JPEG-q90 sizes, per-family L2/cosine scores and 16x16 per-position squared-L2 maps. RAR additionally stores
-token-disagreement scores/maps. True-latent errors are populated only for held-out generated images evaluated with
-their source family; they are NaN for task images and the other family's tokenizer.
 
 ## extract_features.py
 
