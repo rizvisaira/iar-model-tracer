@@ -15,6 +15,7 @@ sys.path.insert(0, "/workspace/iar-model-tracer")
 | [metrics.py](metrics.py) | accuracy with a family / outlier / size breakdown, and confusion matrices |
 | [generate.py](generate.py) | Stage 2: sample (tokens, image) pairs from the RAR / VAR generators |
 | [inverse.py](inverse.py) | Stage 2: fine-tune the inverse decoder $D^{-1}$, evaluate it, load it into a tokenizer |
+| [tokens.py](tokens.py) | Stage 3: recover tokens $Q(D^{-1}(x))$, per-image token-habit and token-histogram features |
 
 ## Conventions
 
@@ -131,3 +132,18 @@ evaluate_generated(tok, "rar", holdout)  # {"l_inv", "tok_acc", "quant"}
 - `load_inverse` overwrites the tokenizer's encoder weights in place, so `signals.rar_signals` / `var_signals` then compute every signal with $D^{-1}$.
 - `finetune` uses Adam and StepLR (stepped per epoch), and logs one row per epoch to `log.csv`, where epoch 0 is the original encoder. Each row has the train loss, held-out `l_inv` / `tok_acc` / `quant`, and (`evaluate_task_train`) the AUC of each signal on the task's train images, own family vs the other. It resumes from `last.pt`.
 - Token accuracy on VAR is capped: VAR's greedy quantizer does not always return $t_Z$ even from the exact $f_Z$.
+
+## tokens (Stage 3)
+
+```python
+from tracer.tokens import recover_tokens, token_frequency, habit_features, histogram_features
+
+tok = load_inverse(LOAD_TOKENIZER["rar"](), "rar", "/workspace/cache/stage2/inv/rar/final.pt")
+t = recover_tokens(tok, "rar", x)                   # [B,256] long (VAR: [B,680], 10 scales concatenated)
+freq = token_frequency(train_tokens, "rar")         # codebook-usage frequencies, from training tokens only
+h = habit_features(t, "rar", freq)                  # DataFrame, one row per image
+H = histogram_features(t, "rar")                    # scipy CSR [B,1024] (VAR: [B,4096]), rows sum to 1
+```
+
+- `habit_features` columns are prefixed with the family: `entropy` (bits) and `distinct` (fraction of distinct tokens) of the token histogram; `same_h` / `same_v`, the fraction of horizontally / vertically adjacent grid positions with the same token; and, if `freq` is given, `logfreq_mean` / `logfreq_p10`, the mean and 10th percentile of $\log$ freq over the image's tokens. VAR has these on the whole sequence and per scale (suffix `_s<p>`; adjacency on scales $\ge 4\times4$, the 1x1 scale skipped).
+- Feature functions take numpy or torch tokens and run on the CPU. `python -m tracer.tokens` runs a self-test on random tokens.

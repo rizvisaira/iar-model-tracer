@@ -8,6 +8,7 @@ Long-running jobs. Run them in tmux with the project environment, and they write
 | [generate_finetune_data.py](generate_finetune_data.py) | 2 | sample (tokens, image) pairs from every generator of a family |
 | [finetune_inverse.py](finetune_inverse.py) | 2 | fine-tune one family's inverse decoder $D^{-1}$ |
 | [run_stage2.sh](run_stage2.sh) | 2 | the whole Stage 2 pipeline for both families |
+| [extract_tokens.py](extract_tokens.py) | 3 | recover the tokens $Q(D^{-1}(x))$ of task and generated images with a family's fine-tuned $D^{-1}$ |
 
 ## extract_features.py
 
@@ -127,3 +128,48 @@ final.pt      D^-1 weights after the last epoch -> extract_features.py --inv-ckp
 ```
 
 Speed: about 19 ms per image per epoch for RAR (batch 8) and 32 ms for VAR (batch 16); peak memory 18 GB and 25 GB. A resumed run gives the same weights as an uninterrupted one (checked with deterministic cuDNN).
+
+## Stage 3: token habits
+
+### extract_tokens.py
+
+Recovers each image's tokens $t = Q(D^{-1}(x))$ with one family's fine-tuned Stage 2 $D^{-1}$ (`tracer.tokens.recover_tokens`), for the per-image token-habit features in [tracer/tokens.py](../tracer/tokens.py). Like `extract_features.py`, it runs once per family and every image is scored with that family's tokenizer, including the other family's images and outliers.
+
+```bash
+cd /workspace/iar-model-tracer
+tmux new -s tokens
+/workspace/venv/bin/python scripts/extract_tokens.py --family rar
+/workspace/venv/bin/python scripts/extract_tokens.py --family var
+```
+
+| argument | default | meaning |
+|---|---|---|
+| `--family {rar,var}` | required | which tokenizer and $D^{-1}$ to use |
+| `--sources` | `task gen` | `task`: every `build_index()` image (train, val, test), in index order; `gen`: the generated set at `--gen-root` |
+| `--inv-ckpt` | `/workspace/cache/stage2/inv/<family>/final.pt` | fine-tuned $D^{-1}$ (from `finetune_inverse.py`) |
+| `--gen-root` | `/workspace/cache/stage3/gen` | generated set, read with `tracer.inverse.load_generated`. The fresh seed-1 set, not `stage2/gen`, most of which $D^{-1}$ was trained on |
+| `--batch-size` | 64 | images per GPU batch; may change between resumed runs |
+| `--shard-size` | 512 | images per shard file |
+| `--limit N` | none | debug: only the first N task images, and the first N generated images **per model** |
+| `--out` | `/workspace/cache/stage3/tokens` | output directory |
+
+#### Outputs
+
+```
+<out>/<family>/<source>/config.json      arguments of the run (except --batch-size)
+<out>/<family>/<source>/shard_XXXX.npz   one per --shard-size images
+<out>/<family>/<source>.npz              all shards merged
+```
+
+Token arrays are int16 `[N,L]`, with L = 256 for RAR (16x16 grid, raster order) and 680 for VAR (10 scales concatenated small → large), as in `tracer/generate.py`.
+
+- `task.npz`: `key, split, label, family, name` (strings; `label` and `family` are `""` for test images) and `tokens` (recovered), in `build_index()` order.
+- `gen.npz`: `label, class, index` (position in that model's sample sequence), `true_tokens` (sampled by the generator) and `tokens` (recovered). The `gen` run also prints the recovered-vs-true token accuracy per model.
+
+Resuming works as in `extract_features.py`: shards are written atomically, finished shards are skipped, and the script exits if the arguments differ from `config.json`.
+
+#### Quick check
+
+```bash
+/workspace/venv/bin/python scripts/extract_tokens.py --family rar --limit 64 --out /tmp/tokens_dryrun
+```

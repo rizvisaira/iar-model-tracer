@@ -6,8 +6,8 @@ Attribute each image to the image autoregressive (IAR) model that generated it, 
 
 | directory | contents | docs |
 |---|---|---|
-| [tracer/](tracer) | Python package: data index, autoencoder and generator loaders, provenance signals, inverse-decoder fine-tuning, decision rule, metrics | [tracer/README.md](tracer/README.md) |
-| [scripts/](scripts) | long-running jobs (feature extraction, fine-tuning data generation, inverse-decoder fine-tuning), run in tmux | [scripts/README.md](scripts/README.md) |
+| [tracer/](tracer) | Python package: data index, autoencoder and generator loaders, provenance signals, inverse-decoder fine-tuning, token recovery and token-habit features, decision rule, metrics | [tracer/README.md](tracer/README.md) |
+| [scripts/](scripts) | long-running jobs (feature extraction, fine-tuning data generation, inverse-decoder fine-tuning, token extraction), run in tmux | [scripts/README.md](scripts/README.md) |
 | [notebooks/](notebooks) | exploration and per-stage analysis | [notebooks/README.md](notebooks/README.md) |
 
 Data, model weights, extracted features and predictions live outside the repo and are never committed.
@@ -28,7 +28,7 @@ The paths are fixed in [tracer/common.py](tracer/common.py):
 | `/workspace/cache` | features, predictions, metrics (created by the scripts) | |
 | `/workspace/hf_cache` | `HF_HOME` | |
 
-Stage 1 uses only the two tokenizers. Stage 2 also samples the eight generators, to create fine-tuning data.
+Stage 1 uses only the two tokenizers. Stage 2 also samples the eight generators, to create fine-tuning data. Stage 3 samples them again with a new seed and reuses Stage 2's $D^{-1}$.
 
 Python environment: `/workspace/venv` (Python 3.12) with `torch`, `numpy`, `pandas`, `scikit-learn`, `matplotlib`, `Pillow`, plus the dependencies of the two external repos. Use it for both scripts and notebook kernels.
 
@@ -55,6 +55,21 @@ tmux new -s stage2 'bash scripts/run_stage2.sh'
 ```
 
 Outputs go to `/workspace/cache/stage2/`: `gen/`, `inv/<family>/` (`log.csv`, `final.pt`), `features/`, `logs/`, `submission_stage2.csv` and `metrics.json`.
+
+## Stage 3: token habits
+
+Tests whether the sizes of a family can be told apart by per-image statistics of the tokens they write, using the tokens $Q(D^{-1}(x))$ recovered with Stage 2's $D^{-1}$. The criteria were registered before the analysis (oracle, realistic, transfer); the size step of the Stage 2 rule is replaced only for a family that passes all three.
+
+```bash
+# Fresh generated set (seed 1; D^-1 was trained on stage2/gen), then tokens of it and of every task image (about 70 min)
+for f in rar var; do
+  /workspace/venv/bin/python scripts/generate_finetune_data.py --family $f --per-model 2560 --seed 1 --out /workspace/cache/stage3/gen
+  /workspace/venv/bin/python scripts/extract_tokens.py --family $f
+done
+# Then evaluate: notebooks/003_stage_3.ipynb (CPU only)
+```
+
+Outputs go to `/workspace/cache/stage3/`: `gen/`, `tokens/<family>/{gen,task}.npz`, `gen_split.csv`, `logs/`, and `submission_stage3.csv` only if val beats Stage 2. Result: negative. Token habits do not identify the size, even from the true tokens, so the Stage 2 predictions stand (see the notebook's Findings).
 
 ## Evaluation
 
