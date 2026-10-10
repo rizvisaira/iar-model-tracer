@@ -6,8 +6,8 @@ Attribute each image to the image autoregressive (IAR) model that generated it, 
 
 | directory | contents | docs |
 |---|---|---|
-| [tracer/](tracer) | Python package: data index, autoencoder and generator loaders, provenance signals, inverse-decoder fine-tuning, token recovery and token-habit features, decision rule, metrics | [tracer/README.md](tracer/README.md) |
-| [scripts/](scripts) | long-running jobs (feature extraction, fine-tuning data generation, inverse-decoder fine-tuning, token extraction), run in tmux | [scripts/README.md](scripts/README.md) |
+| [tracer/](tracer) | Python package: data index, autoencoder and generator loaders, provenance signals, inverse-decoder fine-tuning, token recovery and token-habit features, generator likelihood, decision rule, metrics | [tracer/README.md](tracer/README.md) |
+| [scripts/](scripts) | long-running jobs (feature extraction, fine-tuning data generation, inverse-decoder fine-tuning, token extraction, class estimation, likelihood scoring), run in tmux | [scripts/README.md](scripts/README.md) |
 | [notebooks/](notebooks) | exploration and per-stage analysis | [notebooks/README.md](notebooks/README.md) |
 
 Data, model weights, extracted features and predictions live outside the repo and are never committed.
@@ -28,7 +28,7 @@ The paths are fixed in [tracer/common.py](tracer/common.py):
 | `/workspace/cache` | features, predictions, metrics (created by the scripts) | |
 | `/workspace/hf_cache` | `HF_HOME` | |
 
-Stage 1 uses only the two tokenizers. Stage 2 also samples the eight generators, to create fine-tuning data. Stage 3 samples them again with a new seed and reuses Stage 2's $D^{-1}$.
+Stage 1 uses only the two tokenizers. Stage 2 also samples the eight generators, to create fine-tuning data. Stage 3 samples them again with a new seed and reuses Stage 2's $D^{-1}$. Stage 4 scores tokens under the eight generators and also uses a torchvision ImageNet classifier (`convnext_large`, downloaded once to `/workspace/weights/torchvision/`).
 
 Python environment: `/workspace/venv` (Python 3.12) with `torch`, `numpy`, `pandas`, `scikit-learn`, `matplotlib`, `Pillow`, plus the dependencies of the two external repos. Use it for both scripts and notebook kernels.
 
@@ -70,6 +70,31 @@ done
 ```
 
 Outputs go to `/workspace/cache/stage3/`: `gen/`, `tokens/<family>/{gen,task}.npz`, `gen_split.csv`, `logs/`, and `submission_stage3.csv` only if val beats Stage 2. Result: negative. Token habits do not identify the size, even from the true tokens, so the Stage 2 predictions stand (see the notebook's Findings).
+
+## Stage 4: generator likelihood
+
+Tests whether each size's transformer gives the highest likelihood, under its own guided sampling distribution (rebuilt from each repo's sampler in [tracer/likelihood.py](tracer/likelihood.py)), to the tokens it generated. The images are Stage 3's generated set and task images, with Stage 3's recovered tokens. The class comes from a pretrained ImageNet classifier (top 5). The criteria were registered before the analysis (oracle, realistic, transfer); the size step of the Stage 2 rule is replaced only for a family that passes all three.
+
+```bash
+# Consistency checks of the likelihood code (GPU, about 5 min), then top-10 classes of task and generated images
+/workspace/venv/bin/python -m tracer.test_likelihood
+/workspace/venv/bin/python scripts/estimate_classes.py
+# Scores under all 4 models of each family (about 16 h on an A40 in total; see scripts/README.md)
+for f in rar var; do
+  /workspace/venv/bin/python scripts/score_likelihood.py --family $f --source gen --tokens true --class-mode true        # oracle
+  /workspace/venv/bin/python scripts/score_likelihood.py --family $f --source gen --tokens recovered --class-mode true   # recovered tokens, true class
+  /workspace/venv/bin/python scripts/score_likelihood.py --family $f --source gen --tokens recovered --class-mode topk   # realistic
+  /workspace/venv/bin/python scripts/score_likelihood.py --family $f --source task --tokens recovered --class-mode topk  # task train + val
+done
+# Then evaluate: notebooks/004_stage_4.ipynb (CPU only)
+# For a submission, also score the test images (about 10 h), then rerun the notebook
+for f in rar var; do
+  /workspace/venv/bin/python scripts/score_likelihood.py --family $f --source task --tokens recovered --class-mode topk \
+      --splits test --out /workspace/cache/stage4/scores_test
+done
+```
+
+Outputs go to `/workspace/cache/stage4/`: `tests/`, `classes/{gen,task}.npz`, `scores/<family>/<source>_<tokens>_<class-mode>/<model>.npz`, `scores_test/`, `logs/`, and `submission_stage4.csv` only if val beats Stage 2. Result: positive. Every criterion passes for both families, and a logistic regression on the four models' likelihood summaries replaces the size step of both. Val accuracy rises from 31.6% (Stage 2) to 94.0%, and size accuracy given the correct family from 25.3% to 97.7%. The family and outlier decisions are Stage 2's, and now cause 18 of the 27 val errors (see the notebook's Findings). The test submission is written once the test images are scored.
 
 ## Evaluation
 

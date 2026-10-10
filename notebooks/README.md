@@ -10,6 +10,7 @@ Analysis notebooks. Long jobs live in [scripts/](../scripts) and are run in tmux
 | [001_stage_1.ipynb](001_stage_1.ipynb) | Stage 1 baseline: score selection, the nearest-family + threshold rule, val metrics, a test submission | `/workspace/cache/stage1/{rar,var}.csv` from `scripts/extract_features.py` | `/workspace/cache/stage1/submission_stage1.csv`, `metrics.json` |
 | [002_stage_2.ipynb](002_stage_2.ipynb) | Stage 2: validates the generated data and the $D^{-1}$ fine-tuning, then reruns Stage 1's rule on the new features and compares | the outputs of `scripts/run_stage2.sh` in `/workspace/cache/stage2/`, plus Stage 1's | `/workspace/cache/stage2/submission_stage2.csv`, `metrics.json` |
 | [003_stage_3.ipynb](003_stage_3.ipynb) | Stage 3: token habits. Can per-image statistics of the recovered tokens identify the size within a family? Pre-registered oracle / realistic / transfer checks, then the Stage 2 rule with the size step replaced where they pass | `/workspace/cache/stage3/gen/` and `tokens/` (see below), plus Stage 2's features, `inv/*/log.csv` and `metrics.json` | `/workspace/cache/stage3/gen_split.csv`; `submission_stage3.csv` only if val beats Stage 2 |
+| [004_stage_4.ipynb](004_stage_4.ipynb) | Stage 4: generator likelihood. Does each size's transformer give the highest likelihood, under its own guided sampling distribution, to the tokens it generated? Pre-registered oracle / realistic / transfer checks, then the Stage 2 rule with the size step replaced where they pass | `/workspace/cache/stage4/scores/`, `classes/` and `tests/` (see below), plus Stage 3's `gen_split.csv` and tokens, and Stage 2's features and `metrics.json` | `submission_stage4.csv` only if val beats Stage 2 and the test images have been scored |
 
 ## 00_explore
 
@@ -59,3 +60,30 @@ Tests whether the sizes of a family can be told apart from per-image "token habi
    - **4. Transfer:** the realistic classifiers on the task's labelled train / val images (true family given), plus a separate task-train → task-val comparison.
    - **5. End to end:** the Stage 2 rule with the size step replaced for families that passed all three checks; a test submission only if val improves.
    - **6. Findings:** every pre-registered criterion per family, and the conclusion.
+
+## 004_stage_4
+
+Tests whether the sizes of a family can be told apart by the likelihood of an image's tokens under each size's transformer, with each repo's guided sampling distribution rebuilt in `tracer/likelihood.py`. The tokens are the true tokens (oracle) or the Stage 3 recovered tokens $Q(D^{-1}(x))$, and the class is the true one or the top-5 from a pretrained ImageNet classifier.
+
+1. Check the likelihood code, estimate the classes, then score (see [scripts/README.md](../scripts/README.md#stage-4-generator-likelihood)). Needs Stage 3's `gen/` and `tokens/`:
+   ```bash
+   /workspace/venv/bin/python -m tracer.test_likelihood
+   /workspace/venv/bin/python scripts/estimate_classes.py
+   for f in rar var; do
+     /workspace/venv/bin/python scripts/score_likelihood.py --family $f --source gen --tokens true --class-mode true            # A
+     /workspace/venv/bin/python scripts/score_likelihood.py --family $f --source gen --tokens recovered --class-mode true       # B1
+     /workspace/venv/bin/python scripts/score_likelihood.py --family $f --source gen --tokens recovered --class-mode topk       # B2
+     /workspace/venv/bin/python scripts/score_likelihood.py --family $f --source task --tokens recovered --class-mode topk      # C, D
+   done
+   ```
+2. Run all cells (CPU only, about 10 minutes). Classifiers (the own-sample rule and a logistic regression) are trained on generated train only, and RAR and VAR are analysed separately.
+   - **1. Data and score checks:** provenance of the score files, the consistency tests of `tracer/likelihood.py`, and the generating × scoring model table.
+   - **2. Oracle (A):** true tokens, true class; holdout accuracy, confusion matrices, pairwise AUCs.
+   - **3. Recovered tokens (B1) and estimated classes (B2):** the same, side by side with A, for two ways of combining the top-5 classes.
+   - **4. Transfer (C):** the B2 classifiers on the task's labelled train / val images (true family given), plus a separate task-train → task-val comparison and a sampling-settings diagnostic.
+   - **5. End to end (D):** the Stage 2 rule with the size step replaced for families that passed all three checks. The test submission needs the test images scored first, into a separate directory:
+     ```bash
+     /workspace/venv/bin/python scripts/score_likelihood.py --family <family> --source task --tokens recovered \
+         --class-mode topk --splits test --out /workspace/cache/stage4/scores_test
+     ```
+   - **6. Findings:** every pre-registered criterion per family and classifier, the A → B1 → B2 losses, and the conclusion.

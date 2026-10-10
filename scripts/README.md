@@ -9,6 +9,8 @@ Long-running jobs. Run them in tmux with the project environment, and they write
 | [finetune_inverse.py](finetune_inverse.py) | 2 | fine-tune one family's inverse decoder $D^{-1}$ |
 | [run_stage2.sh](run_stage2.sh) | 2 | the whole Stage 2 pipeline for both families |
 | [extract_tokens.py](extract_tokens.py) | 3 | recover the tokens $Q(D^{-1}(x))$ of task and generated images with a family's fine-tuned $D^{-1}$ |
+| [estimate_classes.py](estimate_classes.py) | 4 | top-10 ImageNet classes of task and generated images, from a pretrained classifier |
+| [score_likelihood.py](score_likelihood.py) | 4 | per-token log-likelihoods of each image's tokens under each of its family's 4 transformers |
 
 ## extract_features.py
 
@@ -172,4 +174,121 @@ Resuming works as in `extract_features.py`: shards are written atomically, finis
 
 ```bash
 /workspace/venv/bin/python scripts/extract_tokens.py --family rar --limit 64 --out /tmp/tokens_dryrun
+```
+
+## Stage 4: generator likelihood
+
+### estimate_classes.py
+
+The generators are class-conditional, so scoring an image's tokens under a generator (`tracer/likelihood.py`) needs its ImageNet class. Generated images come with their true class; task images do not. This script saves the top-10 classes and their softmax probabilities from a pretrained ImageNet classifier: torchvision `convnext_large` with `IMAGENET1K_V1` weights (84.4% top-1 on ImageNet), using the weights' own preprocessing (resize 232, centre crop 224, ImageNet normalisation) on the $[0,1]$ images. The weights (755 MB) are downloaded once to `/workspace/weights/torchvision/`.
+
+```bash
+cd /workspace/iar-model-tracer
+tmux new -s classes
+/workspace/venv/bin/python scripts/estimate_classes.py
+```
+
+| argument | default | meaning |
+|---|---|---|
+| `--sources` | `task gen` | `task`: every `build_index()` image (train, val, test), in index order; `gen`: the generated set at `--gen-root`, both families |
+| `--classifier` | `convnext_large.IMAGENET1K_V1` | torchvision `<architecture>.<weights>` |
+| `--gen-root` | `/workspace/cache/stage3/gen` | generated set, read with `tracer.inverse.load_generated` |
+| `--batch-size` | 64 | images per GPU batch; may change between resumed runs |
+| `--shard-size` | 512 | images per shard file |
+| `--limit N` | none | debug: only the first N task images, and the first N generated images **per model** |
+| `--out` | `/workspace/cache/stage4/classes` | output directory |
+
+#### Outputs
+
+```
+<out>/<source>/config.json      arguments of the run (except --batch-size)
+<out>/<source>/shard_XXXX.npz   one per --shard-size images
+<out>/<source>.npz              all shards merged
+```
+
+Both archives have `top10_class` (int16 `[N,10]`) and `top10_prob` (float32 `[N,10]`, softmax probabilities, most likely first), plus:
+
+- `task.npz`: `key, split, label, family, name` (strings; `label` and `family` are `""` for test images), in `build_index()` order.
+- `gen.npz`: `family, label, index` (position in that model's sample sequence) and `class` (the true class). RAR rows come first, then VAR. The `gen` run also prints top-1 / 5 / 10 accuracy against the true classes, per model.
+
+Resuming works as in `extract_features.py`.
+
+#### Quick check
+
+```bash
+/workspace/venv/bin/python scripts/estimate_classes.py --sources gen --limit 64 --out /tmp/classes_dryrun
+```
+
+On this check (64 images per model, 512 in total), top-1 / 5 / 10 accuracy against the true generated classes is 92.6% / 99.2% / 99.6%.
+
+### score_likelihood.py
+
+Scores every image's tokens under each of the family's 4 transformers with `tracer.likelihood.score_tokens` (teacher forcing, with the guided sampling distribution of each repo's sampler; see [tracer/likelihood.py](../tracer/likelihood.py)). One model is on the GPU at a time and `free()` is called between models. Scoring is fp32, matching `tracer/test_likelihood.py`.
+
+```bash
+cd /workspace/iar-model-tracer
+tmux new -s scores
+# oracle: true tokens, true class (generated set)
+/workspace/venv/bin/python scripts/score_likelihood.py --family rar --source gen --tokens true --class-mode true
+# realistic: recovered tokens, top-5 estimated classes (needs estimate_classes.py first)
+/workspace/venv/bin/python scripts/score_likelihood.py --family rar --source gen --tokens recovered --class-mode topk
+/workspace/venv/bin/python scripts/score_likelihood.py --family rar --source task --tokens recovered --class-mode topk
+```
+
+| argument | default | meaning |
+|---|---|---|
+| `--family {rar,var}` | required | which family's 4 models score the images |
+| `--source {gen,task}` | required | `gen`: `stage3/tokens/<family>/gen.npz`; `task`: `stage3/tokens/<family>/task.npz`, images of `--splits` (all families and outliers) |
+| `--tokens {true,recovered}` | required | the generator's own tokens (`gen` only), or $Q(D^{-1}(x))$ |
+| `--class-mode {true,topk}` | required | the true class (`gen` only), or each of the top `--topk` classes from `estimate_classes.py`, scored separately |
+| `--topk` | 5 | classes per image for `topk` (at most 10) |
+| `--splits` | `train val` | task splits to score (`task` only) |
+| `--models` | all 4 | subset of the family's models |
+| `--classes` | `/workspace/cache/stage4/classes/<source>.npz` | class file for `topk` |
+| `--batch-size` | 32 | (image, class) pairs per GPU pass, two sequences each (class and null); may change between resumed runs |
+| `--shard-size` | 512 | images per shard file |
+| `--limit N` | none | debug: `gen`, the first N images per generating model; `task`, the first N images of the selected splits |
+| `--out` | `/workspace/cache/stage4/scores` | output directory |
+
+#### Outputs
+
+```
+<out>/<family>/<source>_<tokens>_<class-mode>/<model>/config.json      arguments of the run (except --batch-size, --models)
+<out>/<family>/<source>_<tokens>_<class-mode>/<model>/shard_XXXX.npz   one per --shard-size images
+<out>/<family>/<source>_<tokens>_<class-mode>/<model>.npz              all shards merged
+```
+
+Each archive has one row per image, in the row order of the stage3 token file, with K classes per image (K = 1 for `--class-mode true`):
+
+| keys | shape, dtype | contents |
+|---|---|---|
+| `row` + `label, index, class` (gen) or `key, split, label, family, name` (task) | `[N]` | identity; `row` is the position in the stage3 token file |
+| `classes`, `class_prob` | `[N,K]` int16, float32 | the class scored in each slot and its classifier probability (1 for `true`) |
+| `logp_cond`, `logp_uncond`, `logp_guided` | `[N,K,L]` float16 | per-token log-probabilities (`tracer.likelihood.score_tokens`) |
+| `rank_guided` | `[N,K,L]` int16 | rank of the token under the guided logits (0 = most likely) |
+| `in_support` | `[N,K,L]` int8 | VAR only: 1 if the token survives top-k = 900 / top-p = 0.96 |
+| `sum_<q>`, `mean_<q>` | `[N,K]` float32 | per-image sum and mean of each per-token quantity, computed in float32 |
+| `min20_logp_guided` | `[N,K]` float32 | mean of the lowest 20% of the image's `logp_guided` (Min-K%) |
+| `mean_cond_minus_uncond` | `[N,K]` float32 | mean of `logp_cond - logp_uncond` |
+| `in_support_rate` | `[N,K]` float32 | VAR only: fraction of tokens in the top-k / top-p support |
+
+Resuming works as in `extract_features.py`: finished shards are skipped, a model is loaded only if it has shards left, and the script exits if the arguments differ from `config.json`. Size: for `gen` with `--topk 5`, about 0.1 GB per RAR model and 0.3 GB per VAR model. The shards and the merged file each hold a full copy.
+
+#### Speed
+
+Measured on the A40, fp32, `--batch-size 32`: about 100 ms per (image, class) for RAR-XXL and 260 ms for VAR-d30. Time grows roughly with model size, so all 4 models of a family together take about 0.22 s (RAR) and 0.5 s (VAR) per (image, class). Estimates for full runs:
+
+| run | images x classes | RAR | VAR |
+|---|---|---|---|
+| `gen`, K = 1 (`true` tokens or `recovered`, true class) | 10,240 x 1 | ~40 min | ~1.5 h |
+| `gen --class-mode topk` (K = 5) | 10,240 x 5 | ~3 h | ~7 h |
+| `task` train + val, K = 5 | 1,250 x 5 | ~25 min | ~55 min |
+| `task` test, K = 5 | 9,800 x 5 | ~3 h | ~7 h |
+
+#### Quick check
+
+```bash
+/workspace/venv/bin/python scripts/estimate_classes.py --limit 64 --out /tmp/classes_dry
+/workspace/venv/bin/python scripts/score_likelihood.py --family rar --models rarxxl --source gen --tokens recovered \
+    --class-mode topk --limit 64 --classes /tmp/classes_dry/gen.npz --out /tmp/scores_dry
 ```
