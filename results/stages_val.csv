@@ -1,0 +1,5 @@
+stage,method,accuracy,family_accuracy,outlier_recall,outlier_precision,size_accuracy_given_family,family_recall_rar,family_recall_var,family_recall_outlier
+1,original encoders E (signals) + LR on signals (size),0.235556,0.837778,0.320000,0.533333,0.249307,0.925000,0.880000,0.320000
+2,fine-tuned D^-1 (signals) + LR on signals (size),0.315556,0.960000,0.880000,0.862745,0.252577,0.960000,0.980000,0.880000
+3,"Stage 2; token-habit size step (no family passed, so unchanged)",0.315556,0.960000,0.880000,0.862745,0.252577,0.960000,0.980000,0.880000
+4,Stage 2 family / outlier + generator-likelihood LR (size),0.940000,0.960000,0.880000,0.862745,0.976804,0.960000,0.980000,0.880000

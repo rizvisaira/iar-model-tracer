@@ -1,0 +1,228 @@
+{
+  "stages_val": {
+    "1": {
+      "method": "original encoders E (signals) + LR on signals (size)",
+      "accuracy": 0.235556,
+      "family_accuracy": 0.837778,
+      "outlier_recall": 0.32,
+      "outlier_precision": 0.533333,
+      "size_accuracy_given_family": 0.249307
+    },
+    "2": {
+      "method": "fine-tuned D^-1 (signals) + LR on signals (size)",
+      "accuracy": 0.315556,
+      "family_accuracy": 0.96,
+      "outlier_recall": 0.88,
+      "outlier_precision": 0.862745,
+      "size_accuracy_given_family": 0.252577
+    },
+    "3": {
+      "method": "Stage 2; token-habit size step (no family passed, so unchanged)",
+      "accuracy": 0.315556,
+      "family_accuracy": 0.96,
+      "outlier_recall": 0.88,
+      "outlier_precision": 0.862745,
+      "size_accuracy_given_family": 0.252577
+    },
+    "4": {
+      "method": "Stage 2 family / outlier + generator-likelihood LR (size)",
+      "accuracy": 0.94,
+      "family_accuracy": 0.96,
+      "outlier_recall": 0.88,
+      "outlier_precision": 0.862745,
+      "size_accuracy_given_family": 0.976804
+    }
+  },
+  "final_model": {
+    "method": "Stage 2 family / outlier (NearestFamilyThreshold on fine-tuned D^-1 signals, q = 0.95) + Stage 4 size (logistic regression on generator-likelihood summaries; recovered tokens, top-5 classes, B2 mixture)",
+    "val": {
+      "accuracy": 0.94,
+      "family_accuracy": 0.96,
+      "outlier_recall": 0.88,
+      "outlier_precision": 0.862745,
+      "size_accuracy_given_family": 0.976804,
+      "family_recall_rar": 0.96,
+      "family_recall_var": 0.98,
+      "n": 450,
+      "accuracy_95ci": [
+        0.917778,
+        0.96
+      ],
+      "size_accuracy_given_family_95ci": [
+        0.960833,
+        0.989823
+      ],
+      "bootstrap": "2000 resamples of the val images, seed 0"
+    },
+    "val_error_breakdown": {
+      "family error (RAR <-> VAR)": 5,
+      "outlier false positive": 7,
+      "outlier miss": 6,
+      "size error (correct family)": 9,
+      "total": 27
+    },
+    "test_predicted_shares": {
+      "n": 9800,
+      "labels": {
+        "var16": 0.085816,
+        "var20": 0.083571,
+        "var24": 0.077347,
+        "var30": 0.076327,
+        "rarb": 0.071939,
+        "rarl": 0.072347,
+        "rarxl": 0.066531,
+        "rarxxl": 0.067245,
+        "outlier": 0.398878
+      },
+      "families": {
+        "rar": 0.278061,
+        "var": 0.323061,
+        "outlier": 0.398878
+      }
+    },
+    "expected_test_accuracy_if_val_rates_hold": {
+      "as val (50 / 450)": {
+        "test_outlier_share": 0.111111,
+        "expected_accuracy": 0.94,
+        "95ci": [
+          0.918062,
+          0.960906
+        ],
+        "expected_predicted_outlier_share": 0.113333
+      },
+      "20%": {
+        "test_outlier_share": 0.2,
+        "expected_accuracy": 0.934,
+        "95ci": [
+          0.909517,
+          0.958412
+        ],
+        "expected_predicted_outlier_share": 0.19
+      },
+      "30%": {
+        "test_outlier_share": 0.3,
+        "expected_accuracy": 0.92725,
+        "95ci": [
+          0.896619,
+          0.95725
+        ],
+        "expected_predicted_outlier_share": 0.27625
+      },
+      "40%": {
+        "test_outlier_share": 0.4,
+        "expected_accuracy": 0.9205,
+        "95ci": [
+          0.881234,
+          0.956502
+        ],
+        "expected_predicted_outlier_share": 0.3625
+      },
+      "60%": {
+        "test_outlier_share": 0.6,
+        "expected_accuracy": 0.907,
+        "95ci": [
+          0.850345,
+          0.957984
+        ],
+        "expected_predicted_outlier_share": 0.535
+      },
+      "implied by the observed predicted-outlier share": {
+        "test_outlier_share": 0.442177,
+        "expected_accuracy": 0.917653,
+        "95ci": [
+          0.867176,
+          0.956295
+        ],
+        "expected_predicted_outlier_share": 0.398878
+      },
+      "implied by the lower-tail mixture check (z0 = 0)": {
+        "test_outlier_share": 0.430299,
+        "expected_accuracy": 0.918455,
+        "95ci": [
+          0.876903,
+          0.956964
+        ],
+        "expected_predicted_outlier_share": 0.388633
+      }
+    },
+    "observed_test_predicted_outlier_share": 0.398878
+  },
+  "submission_checks": {
+    "header is exactly image_name,label": {
+      "submission.csv (test)": "PASS",
+      "submission_val.csv (val)": "PASS"
+    },
+    "one row per image (test 9,800 / val 450)": {
+      "submission.csv (test)": "PASS",
+      "submission_val.csv (val)": "PASS"
+    },
+    "every image appears exactly once, no extras": {
+      "submission.csv (test)": "PASS",
+      "submission_val.csv (val)": "PASS"
+    },
+    "every image_name ends with .png": {
+      "submission.csv (test)": "PASS",
+      "submission_val.csv (val)": "PASS"
+    },
+    "every label is one of the 9 allowed strings": {
+      "submission.csv (test)": "PASS",
+      "submission_val.csv (val)": "PASS"
+    },
+    "no empty fields, exactly 2 columns per row": {
+      "submission.csv (test)": "PASS",
+      "submission_val.csv (val)": "PASS"
+    },
+    "round-trips through pandas": {
+      "submission.csv (test)": "PASS",
+      "submission_val.csv (val)": "PASS"
+    },
+    "round-trips through csv.reader (stdlib)": {
+      "submission.csv (test)": "PASS",
+      "submission_val.csv (val)": "PASS"
+    },
+    "template's loader": {
+      "submission.csv (test)": "N/A (no loader in task_template.py)",
+      "submission_val.csv (val)": "N/A (no loader in task_template.py)"
+    },
+    "byte-identical to the template's writer (CRLF, no BOM)": {
+      "submission.csv (test)": "PASS",
+      "submission_val.csv (val)": "PASS"
+    },
+    "rows in the template's order (test: TestDataset, val: ImageFolder)": {
+      "submission.csv (test)": "PASS",
+      "submission_val.csv (val)": "PASS"
+    },
+    "labels equal this notebook's final predictions": {
+      "submission.csv (test)": "PASS",
+      "submission_val.csv (val)": "PASS"
+    },
+    "labels equal 004's saved predictions": {
+      "submission.csv (test)": "PASS",
+      "submission_val.csv (val)": "PASS"
+    }
+  },
+  "files": {
+    "submission": "submission.csv",
+    "submission_val": "submission_val.csv",
+    "results": [
+      "results/confusion_val.png",
+      "results/errors_val.png",
+      "results/expected_test_accuracy.csv",
+      "results/feature_ablation.csv",
+      "results/final_summary.json",
+      "results/final_summary.md",
+      "results/label_shares.png",
+      "results/outliers_test_val.png",
+      "results/stages_val.csv",
+      "results/stages_val.png",
+      "results/zscores_val_test.png"
+    ],
+    "outside the repo": [
+      "/workspace/cache/final/pred_val.csv",
+      "/workspace/cache/stage1/metrics.json",
+      "/workspace/cache/stage2/metrics.json",
+      "/workspace/cache/stage3/metrics.json",
+      "/workspace/cache/stage4/metrics.json"
+    ]
+  }
+}

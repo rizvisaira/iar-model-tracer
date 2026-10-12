@@ -1,0 +1,8 @@
+scenario,test outlier share,expected accuracy,95% CI low,95% CI high,expected predicted-outlier share,observed predicted-outlier share,accuracy if in-family -> outlier rate matches observed
+as val (50 / 450),0.1111,0.9400,0.9181,0.9609,0.1133,0.3989,0.6646
+20%,0.2000,0.9340,0.9095,0.9584,0.1900,0.3989,0.7326
+30%,0.3000,0.9273,0.8966,0.9573,0.2762,0.3989,0.8090
+40%,0.4000,0.9205,0.8812,0.9565,0.3625,0.3989,0.8854
+60%,0.6000,0.9070,0.8503,0.9580,0.5350,0.3989,
+implied by the observed predicted-outlier share,0.4422,0.9177,0.8672,0.9563,0.3989,0.3989,0.9177
+implied by the lower-tail mixture check (z0 = 0),0.4303,0.9185,0.8769,0.9570,0.3886,0.3989,0.9086
