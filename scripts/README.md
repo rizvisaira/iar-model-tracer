@@ -11,6 +11,8 @@ Long-running jobs. Run them in tmux with the project environment, and they write
 | [extract_tokens.py](extract_tokens.py) | 3 | recover the tokens $Q(D^{-1}(x))$ of task and generated images with a family's fine-tuned $D^{-1}$ |
 | [estimate_classes.py](estimate_classes.py) | 4 | top-10 ImageNet classes of task and generated images, from a pretrained classifier |
 | [score_likelihood.py](score_likelihood.py) | 4 | per-token log-likelihoods of each image's tokens under each of its family's 4 transformers |
+| [score_stage5_pilot.py](score_stage5_pilot.py) | 5 | signals, token recovery and $D^{-1}$ inversion error of the VAR generated holdout under several inverse decoders |
+| [run_stage5_pilot.sh](run_stage5_pilot.sh) | 5 | the Stage 5 pilot: var24-only $D^{-1}$ for 5 and 20 epochs, then `score_stage5_pilot.py` |
 
 ## extract_features.py
 
@@ -109,6 +111,7 @@ Speed at batch 64 (ms per image): RAR-B / L / XL / XXL 157 / 198 / 305 / 415; VA
 |---|---|---|
 | `--family {rar,var}` | required | which $D^{-1}$ to fine-tune |
 | `--data` | `/workspace/cache/stage2/gen` | `generate_finetune_data.py` output |
+| `--models` | all | train and evaluate only on these model folders of `<data>/<family>`, e.g. `var24`; recorded in `config.json` only when given |
 | `--max-per-model` | all | use only the first N samples of each model |
 | `--holdout-per-model` | 100 | last N samples of each model are held out (never trained on) and evaluated each epoch |
 | `--epochs` | paper: rar 50, var 10 | |
@@ -291,4 +294,51 @@ Measured on the A40, fp32, `--batch-size 32`: about 100 ms per (image, class) fo
 /workspace/venv/bin/python scripts/estimate_classes.py --limit 64 --out /tmp/classes_dry
 /workspace/venv/bin/python scripts/score_likelihood.py --family rar --models rarxxl --source gen --tokens recovered \
     --class-mode topk --limit 64 --classes /tmp/classes_dry/gen.npz --out /tmp/scores_dry
+```
+
+## Stage 5 pilot: one inverse decoder per model
+
+### run_stage5_pilot.sh
+
+```bash
+SMOKE=1 bash scripts/run_stage5_pilot.sh                    # 1 epoch on 32 images, --limit 16; about 3 min
+tmux new -s stage5 'bash scripts/run_stage5_pilot.sh'
+```
+
+Fine-tunes a var24-only $D^{-1}$ (`finetune_inverse.py --models var24`) for 5 epochs (`inv/var24_5ep`) and for 20 epochs (`inv/var24_20ep`, the same 3,075 optimizer steps as the shared inverse's 5 epochs on all four depths), with every other setting as in `stage2/inv/var/config.json`, then scores `E`, `shared`, `single5` and `single20` into `scores.csv`. Outputs and logs (`logs/`) go to `/workspace/cache/stage5`. Training steps are skipped if `final.pt` exists and scoring if `scores.config.json` lists all four inverses; interrupted steps resume. `SMOKE=1` writes to `/workspace/cache/stage5_smoke` instead (40 images per model with the last 8 held out, 1 epoch for both runs, scoring `--limit 16`).
+
+### score_stage5_pilot.py
+
+Scores the VAR holdout of the fresh generated set (holdout rows of `stage3/gen_split.csv`, 512 per depth, images from `stage3/gen`, true tokens from `stage3/tokens/var/gen.npz` matched by label and index) under several inverse decoders: `E` (the original encoder), `shared` (`stage2/inv/var/final.pt`, trained on all four depths) and each `--single NAME=PATH` (for example a $D^{-1}$ trained on var24 only with `finetune_inverse.py --models var24`). Before scoring, it asserts that no var24 holdout true-token sequence also appears in `stage2/gen/var/var24`.
+
+```bash
+/workspace/venv/bin/python scripts/finetune_inverse.py --family var --epochs 5 --models var24 \
+    --out /workspace/cache/stage5/inv/var24_5ep
+/workspace/venv/bin/python scripts/score_stage5_pilot.py --single single5=/workspace/cache/stage5/inv/var24_5ep/final.pt
+```
+
+| argument | default | meaning |
+|---|---|---|
+| `--single NAME=PATH` | none | a fine-tuned $D^{-1}$ checkpoint scored as inverse `NAME` (repeatable; `E` and `shared` are reserved) |
+| `--batch-size` | 64 | images per GPU batch (keep it fixed across runs that will be compared) |
+| `--limit N` | none | debug: the first N holdout images of each depth |
+| `--out` | `/workspace/cache/stage5/scores.csv` | output CSV |
+
+#### Outputs
+
+`--out` is a long-format CSV with one row per image and inverse: `label, index, inverse`, then
+
+| column | meaning |
+|---|---|
+| `quant, enc1, enc2, cal, comb, tok_match` | `tracer.signals.var_signals` with `n_iters=0` (greedy quantization) |
+| `tok_recovery` | fraction of the 680 greedy tokens $Q(D^{-1}(x))$ equal to the true tokens |
+| `inv_mse` | mean $(D^{-1}(x) - f_Z)^2$ with $f_Z$ built from the true tokens: the Eq. 6 training loss per image |
+
+`<out stem>.config.json` records, per inverse, the checkpoint, `--limit`, the row count, the git commit (and whether the tree was dirty) and the full command line. A rerun skips inverses already scored with the same checkpoint and `--limit`, and exits if a name is reused with a different checkpoint or `--limit` differs. Convolutions run in full fp32 (TF32 off) with deterministic cuDNN, so a rerun at the same `--batch-size` gives identical scores, and a different batch size changes about 1 recovered token in $10^5$. With TF32, 2-4% of greedy VAR tokens change with the batch size, so recovered tokens differ from `stage3/tokens` (extracted with TF32) by a few percent, while mean token recovery agrees. About 2.5 minutes per inverse for the full 2,048 images on the H100.
+
+#### Quick check
+
+```bash
+/workspace/venv/bin/python scripts/score_stage5_pilot.py --limit 16 --out /tmp/stage5_dry/scores.csv \
+    --single dup=/workspace/cache/stage2/inv/var/final.pt   # dup must equal shared
 ```

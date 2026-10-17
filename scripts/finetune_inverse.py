@@ -6,6 +6,7 @@ quantized features f_Z, with the decoder and codebook frozen. Data comes from sc
     python scripts/finetune_inverse.py --family rar                       # paper recipe (50 epochs, lr 5e-4, batch 8)
     python scripts/finetune_inverse.py --family var                       # paper recipe (10 epochs, lr 5e-5, batch 16)
     python scripts/finetune_inverse.py --family rar --epochs 5 --out /workspace/cache/stage2/inv/rar_short
+    python scripts/finetune_inverse.py --family var --epochs 5 --models var24 --out /workspace/cache/stage5/inv/var24
 
 Writes config.json, log.csv (per-epoch metrics; epoch 0 = original encoder), last.pt (for resuming) and final.pt
 (load with tracer.inverse.load_inverse, or pass to scripts/extract_features.py --inv-ckpt). Rerunning the same
@@ -30,6 +31,8 @@ def main():
     ap = argparse.ArgumentParser(description="Fine-tune one family's inverse decoder with L_inv (Eq. 6).")
     ap.add_argument("--family", choices=["rar", "var"], required=True)
     ap.add_argument("--data", type=Path, default=CACHE / "stage2" / "gen", help="generate_finetune_data.py output")
+    ap.add_argument("--models", nargs="+", default=None,
+                    help="train only on these model folders of <data>/<family>, e.g. var24; default: all")
     ap.add_argument("--max-per-model", type=int, default=None, help="use only the first N samples of each model")
     ap.add_argument("--holdout-per-model", type=int, default=100,
                     help="last N samples of each model are held out for evaluation, not trained on")
@@ -47,10 +50,17 @@ def main():
         if getattr(args, k) is None:
             setattr(args, k, v)
     args.out = args.out or CACHE / "stage2" / "inv" / args.family
-    write_config(args.out, {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()})
+    if args.models:
+        missing = [m for m in args.models if not any((args.data / args.family / m).glob("shard_*.npz"))]
+        if missing:
+            ap.error(f"no shards for {missing} under {args.data / args.family}")
+    cfg = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()}
+    if args.models is None:
+        del cfg["models"]  # default runs keep their earlier config.json, so they still resume
+    write_config(args.out, cfg)
 
     torch.manual_seed(args.seed)
-    data = load_generated(args.data, args.family, max_per_model=args.max_per_model)
+    data = load_generated(args.data, args.family, models=args.models, max_per_model=args.max_per_model)
     train, holdout = split_holdout(data, args.holdout_per_model)
     print(f"{args.family}: {len(train['tokens'])} train / {len(holdout['tokens'])} held-out generated images "
           f"from {sorted(set(data['label']))}", flush=True)
