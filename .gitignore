@@ -1,0 +1,14 @@
+.github/copilot-instructions.md
+
+__pycache__/
+.ipynb_checkpoints/
+*.pt
+*.pth
+*.bin
+*.npy
+*.npz
+*.safetensors
+*.zip
+data/
+cache/
+features/
