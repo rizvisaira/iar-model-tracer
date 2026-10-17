@@ -13,6 +13,7 @@ Analysis notebooks. Long jobs live in [scripts/](../scripts) and are run in tmux
 | [004_stage_4.ipynb](004_stage_4.ipynb) | Stage 4: generator likelihood. Does each size's transformer give the highest likelihood, under its own guided sampling distribution, to the tokens it generated? Pre-registered oracle / realistic / transfer checks, then the Stage 2 rule with the size step replaced where they pass | `/workspace/cache/stage4/scores/`, `classes/` and `tests/` (see below), plus Stage 3's `gen_split.csv` and tokens, and Stage 2's features and `metrics.json` | `/workspace/cache/stage4/metrics.json`, `val_predictions.csv`; `submission_stage4.csv` only if val beats Stage 2 and the test images have been scored |
 | [005_final_results.ipynb](005_final_results.ipynb) | Final results: the final method, all stages on val, the final model's errors, the test predictions and submission with format checks, test vs val, a summary, and a feature-group ablation of the size step | `metrics.json` and `val_predictions.csv` of stages 1–4, Stage 2's features, Stage 4's `scores/`, `scores_test/` and `classes/`, Stage 3's `gen_split.csv` and tokens, the task images | `../submission.csv`, `../submission_val.csv`, `../results/` (figures, CSV / JSON / Markdown summaries), `/workspace/cache/final/pred_val.csv` |
 | [006_stage_5_pilot.ipynb](006_stage_5_pilot.ipynb) | Stage 5 pilot: does an inverse decoder fine-tuned on var24 only invert var24's images better, and separate them from the other VAR depths, compared with the shared VAR inverse? Pre-registered C1 (inversion) / C2 (separation) on single5; single20 secondary and singlefull exploratory; a side-by-side summary of all inverses. CPU only | `/workspace/cache/stage5/scores.csv` and `scores.config.json` from `scripts/run_stage5_pilot.sh`, and each inverse's `config.json` and training shards (for the training size) | `../results/stage5/`: `means_by_depth.csv`, `separation.csv`, `criteria.csv`, `summary.csv`, `log_cal_by_depth.png` |
+| [007_stage_5_full.ipynb](007_stage_5_full.ipynb) | Stage 5 full: Stage 2 with one inverse decoder per model (8) instead of per family, and the nearest-model rule (`tracer.stage5.NearestModelThreshold`). Reproduces Stage 2 first, then pre-registered P1 (size, per family) / S1 (family and outliers) on val, Stage 2 side by side; exploratory cells marked. CPU only | the outputs of `scripts/run_stage5_full.sh` in `/workspace/cache/stage5full/`, the pilot's var24 set and inverse (`stage5/gen`, `stage5/inv/var24_full`), Stage 2's features, `inv/` and `metrics.json` | `../results/stage5full/` (CSV / JSON / PNG), `/workspace/cache/stage5full/{val,test}_predictions.csv` |
 
 ## 00_explore
 
@@ -102,3 +103,19 @@ Run all cells (CPU only, about 1 minute). Nothing is tuned on test.
 - **4. Test vs val:** distributions only. Predicted shares, the Stage 2 z-scores, the size step's confidence and own-model fit, and test images predicted outlier next to val's true outliers. Then the expected test accuracy for different outlier shares, assuming val's per-group rates carry over. Writes `results/label_shares.png`, `zscores_val_test.png`, `outliers_test_val.png` and `expected_test_accuracy.csv`.
 - **5. Final results:** a compact summary of all of the above, printed and saved as `results/final_summary.{json,md}`.
 - **6. What carries the VAR size signal:** the Stage 4 LR refit with one feature group removed, and with one group alone, for RAR and VAR. Scored on the generated holdout and task train + val; the final model is unchanged. Writes `results/feature_ablation.csv`.
+
+## 007_stage_5_full
+
+Stage 2 with one change: one inverse decoder $D^{-1}$ per model instead of per family. Each image is scored with every model's own $D^{-1}$, and the label is the nearest model (lowest z), or outlier above that model's threshold. Does not change `submission.csv`.
+
+1. Run the pipeline (smoke test first; see [scripts/README.md](../scripts/README.md#stage-5-full-one-inverse-decoder-per-model-end-to-end)):
+   ```bash
+   SMOKE=1 bash scripts/run_stage5_full.sh
+   tmux new -s stage5full 'bash scripts/run_stage5_full.sh'
+   ```
+2. Run all cells (CPU only). The first cell states the goal, the decision rule, the pre-registered criteria P1 / S1 and the prediction, with their operational definitions, before any result.
+   - **1. Stage 2 reference:** refits `NearestFamilyThreshold` exactly as in 002 and asserts that val reproduces 002 (31.6% / 96.0% / 88.0 / 86.3% / 25.3%) before any comparison.
+   - **2–4. Checks:** the composition and seed check of each model's training set (var24 = the pilot's set); each inverse's settings against Stage 2's and its `log.csv` curves; the per-model features (own checkpoint, `--var-iters 0`, rows, NaNs, `enc2` floor).
+   - **5–6. Fit on train, val once:** metrics next to Stage 2, then P1 per family (variant accuracy given the correct family; adjacent-size AUCs of z_a − z_b) and S1 (family accuracy, outlier recall / precision ≥ Stage 2 − 0.02), with 95% bootstrap intervals, and the confusion matrices.
+   - **7. Exploratory** (does not affect pass/fail): mean z by true label, all pairwise AUCs, predicted label shares on test.
+   - **8. Summary:** `results/stage5full/metrics.json`. The Findings cell is left for the write-up.

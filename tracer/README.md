@@ -16,6 +16,7 @@ sys.path.insert(0, "/workspace/iar-model-tracer")
 | [generate.py](generate.py) | Stage 2: sample (tokens, image) pairs from the RAR / VAR generators |
 | [inverse.py](inverse.py) | Stage 2: fine-tune the inverse decoder $D^{-1}$, evaluate it, load it into a tokenizer |
 | [tokens.py](tokens.py) | Stage 3: recover tokens $Q(D^{-1}(x))$, per-image token-habit and token-histogram features |
+| [stage5.py](stage5.py) | Stage 5 full: `NearestModelThreshold`, the nearest-model rule over 8 per-model inverses, and the per-model feature loader |
 
 ## Conventions
 
@@ -147,3 +148,26 @@ H = histogram_features(t, "rar")                    # scipy CSR [B,1024] (VAR: [
 
 - `habit_features` columns are prefixed with the family: `entropy` (bits) and `distinct` (fraction of distinct tokens) of the token histogram; `same_h` / `same_v`, the fraction of horizontally / vertically adjacent grid positions with the same token; and, if `freq` is given, `logfreq_mean` / `logfreq_p10`, the mean and 10th percentile of $\log$ freq over the image's tokens. VAR has these on the whole sequence and per scale (suffix `_s<p>`; adjacency on scales $\ge 4\times4$, the 1x1 scale skipped).
 - Feature functions take numpy or torch tokens and run on the CPU. `python -m tracer.tokens` runs a self-test on random tokens.
+
+## stage5 (Stage 5 full)
+
+```python
+from tracer.stage5 import KNOWN_MODELS, NearestModelThreshold, load_model_features, model_score_cols
+
+ckpts = {m: f"/workspace/cache/stage5full/inv/{m}/final.pt" for m in KNOWN_MODELS}
+ckpts["var24"] = "/workspace/cache/stage5/inv/var24_full/final.pt"
+df = load_model_features("/workspace/cache/stage5full/features", ckpts)  # columns <model>_<signal>, e.g. rarb_quant
+model = NearestModelThreshold(model_score_cols(), q=0.95).fit(train)   # RAR: <model>_quant, VAR: <model>_cal
+model.model_z(df)         # z_<model> for the 8 models
+model.nearest(df)         # nearest model, its z and its tau, before the outlier check
+model.predict(df)         # full label strings
+model.predict_family(df)  # "rar" / "var" / "outlier"
+```
+
+`load_model_features` joins the per-model tables written by `scripts/run_stage5_full.sh` (`<root>/<model>/<family>.csv`, each computed with that model's own $D^{-1}$). It renames `<family>_<signal>` to `<model>_<signal>`, requires the rows of `build_index()` in order (with `limit=N`, its first N rows, for tables written with `extract_features.py --limit N`, as in `SMOKE=1`), and, given `ckpts`, checks each table's checkpoint and `--var-iters 0`.
+
+1. **Standardise.** For each model, `z_m = (log s_m - mu_m) / sd_m`, with `mu_m` and `sd_m` (population std) taken from that model's own train images.
+2. **Nearest model.** The model with the lowest z is the label; exact ties go to the first model of `score_cols`.
+3. **Outlier check.** The image is an outlier if that z exceeds `tau_m`, the q-quantile of the model's own train z-scores. Train must contain no outliers.
+
+There is no separate size step. With one pseudo-model per family it reduces to `NearestFamilyThreshold` with `size_cols=None`, which `python -m tracer.test_stage5` checks on random data and on the Stage 2 features (CPU, under a minute).

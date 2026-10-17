@@ -13,7 +13,8 @@ Long-running jobs. Run them in tmux with the project environment, and they write
 | [score_likelihood.py](score_likelihood.py) | 4 | per-token log-likelihoods of each image's tokens under each of its family's 4 transformers |
 | [score_stage5_pilot.py](score_stage5_pilot.py) | 5 | signals, token recovery and $D^{-1}$ inversion error of the VAR generated holdout under several inverse decoders |
 | [run_stage5_pilot.sh](run_stage5_pilot.sh) | 5 | the Stage 5 pilot: var24-only $D^{-1}$s (5 and 20 epochs on stage2 data; 5 epochs on 9,840 images with new data), then `score_stage5_pilot.py` |
-| [assemble_stage5_gen.py](assemble_stage5_gen.py) | 5 | symlink stage2's var24 shards and newly generated var24 shards into one generated set, with seed and source checks |
+| [assemble_stage5_gen.py](assemble_stage5_gen.py) | 5 | symlink a model's stage2 shards and its newly generated shards into one generated set (var24 by default; all models of a family with `--labels`), with seed and source checks |
+| [run_stage5_full.sh](run_stage5_full.sh) | 5 | Stage 5 full: 7,680 new images, a $D^{-1}$ and task-image features for each of the 8 models (var24's $D^{-1}$ from the pilot) |
 
 ## extract_features.py
 
@@ -327,15 +328,19 @@ Images generated on the H100 are decoded slightly differently from the A40 ones 
 
 | argument | default | meaning |
 |---|---|---|
+| `--family` | `var` | family of the models to assemble |
 | `--label` | `var24` | model folder to assemble |
+| `--labels` | `--label` | several model folders of `--family`, assembled in one call |
 | `--base` | `/workspace/cache/stage2/gen` | first source; its shards come first |
 | `--extra` | `/workspace/cache/stage5/gen_extra` | second source (`generate_finetune_data.py --out`) |
 | `--expect-extra` | required | number of shards the second source must have |
+| `--extra-for LABEL DIR N_SHARDS` | none | use `DIR` (with `N_SHARDS` shards) as `LABEL`'s second source instead of `--extra` (repeatable) |
 | `--used` | `stage2/gen stage3/gen` | generated sets whose derived seeds (class shuffle `seed + model position`, per-shard `seed * 1000003 + position * 10007 + shard`) must not be reused |
-| `--seed-check-only`, `--extra-seed` | off | only check a planned seed against `--used` |
-| `--out` | `/workspace/cache/stage5/gen` | output; only symlinks and `var/config.json` are written |
+| `--seed-scope` | `all` | `all`: compare with every family of `--used`; `family`: only with `--family` (seeds drive different networks in different families, and `stage2/gen` already uses seed 0 for both) |
+| `--seed-check-only`, `--extra-seed` | off | only check a planned seed for every label against `--used`, then exit |
+| `--out` | `/workspace/cache/stage5/gen` | output; only symlinks and `<family>/config.json` are written |
 
-Checks before linking: same family, shard size and batch size; shard files without gaps and with `--shard-size` samples each; each source's classes equal the generator's class cycling for its seed; no derived seed collision. `var/config.json` holds the sources (directory, seed, batch size, shards, rows, GPU, output shard and index ranges), the seed check, the time, git commit and command. Rerunning with the same composition does nothing; a different one exits.
+Checks before linking: same family, shard size and batch size; shard files without gaps and with `--shard-size` samples each; each source's classes equal the generator's class cycling for its seed; no derived seed collision with `--used` (a `--used` set that is the source itself is skipped, so the pilot's var24 shards can be reused) or between the second sources of one call. `<family>/config.json` holds the sources (directory, seed, batch size, shards, rows, GPU, output shard and index ranges), the seed check, the time, git commit and command; with several labels, these are per model under `models`. It is written after all model folders are in place. Rerunning with the same composition does nothing; a different one exits.
 
 ### score_stage5_pilot.py
 
@@ -373,3 +378,22 @@ Scores the VAR holdout of the fresh generated set (holdout rows of `stage3/gen_s
 /workspace/venv/bin/python scripts/score_stage5_pilot.py --limit 16 --out /tmp/stage5_dry/scores.csv \
     --single dup=/workspace/cache/stage2/inv/var/final.pt   # dup must equal shared
 ```
+
+## Stage 5 full: one inverse decoder per model, end to end
+
+### run_stage5_full.sh
+
+```bash
+SMOKE=1 bash scripts/run_stage5_full.sh                     # 1 new shard per model, 1 epoch on 32 images, --limit 64
+tmux new -s stage5full 'bash scripts/run_stage5_full.sh'    # estimated 2.5-3.5 h on the H100 (VAR about 50 min first)
+```
+
+Stage 2 with one change: one $D^{-1}$ per model instead of one per family. Outputs and logs (`logs/`) go to `/workspace/cache/stage5full`. Steps, VAR first and then RAR, each skipped if its output exists (interrupted steps resume):
+
+0. Preflight: `stage5/inv/var24_full` (reused for var24) was trained on `stage5/gen` with `--max-per-model 9940 --holdout-per-model 100` and every other setting of `stage2/inv/var/config.json`. Then `assemble_stage5_gen.py --seed-check-only --seed-scope family` for all 7 new models, against `stage2/gen`, `stage3/gen` and `stage5/gen_extra`, before anything is generated.
+1. `gen_extra/<family>/<model>`: 7,680 new images for each model except var24 (`generate_finetune_data.py --models ... --seed 10 --per-model 7680`, 15 shards). Skipped if every model's last shard exists.
+2. `gen/<family>/<model>`: `assemble_stage5_gen.py --labels <all 4>` symlinks each model's 5 `stage2/gen` shards and 15 new ones (10,240 rows); var24's second source is the pilot's `stage5/gen_extra` (`--extra-for`), and its links are checked to equal `stage5/gen/var/var24`. Skipped if `gen/<family>/config.json` exists.
+3. `inv/<model>`: `finetune_inverse.py --models <model> --data stage5full/gen --max-per-model 9940 --holdout-per-model 100` (9,840 training images) with epochs, batch size, learning rate, StepLR and seed read from `stage2/inv/<family>/config.json` (RAR 10 epochs, VAR 5). Not run for var24.
+4. `features/<model>/<family>.csv`: `extract_features.py --var-iters 0 --inv-ckpt <the model's own final.pt>` for all 11,050 task images; read with `tracer.stage5.load_model_features`.
+
+Nothing is written to `stage2`, `stage3` or `stage5`. `SMOKE=1` writes to `/workspace/cache/stage5full_smoke` instead: 1 new shard (512 images) per model, 40 images per model with the last 8 held out, 1 epoch, features `--limit 64`; var24 still reads the pilot's (real) data and inverse.

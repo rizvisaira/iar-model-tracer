@@ -4,6 +4,7 @@ Modules:
     common   paths, label mapping, data index, image loading, and loaders for the RAR / VAR autoencoders
     signals  provenance signals from Zhao et al. (QuantLoss, EncLoss, calibrated EncLoss, ...) for one batch
     stage1   NearestFamilyThreshold, the Stage 1 decision rule (family -> outlier -> size)
+    stage5   NearestModelThreshold, the Stage 5 full decision rule (nearest of 8 models -> outlier)
     metrics  accuracy plus the family / outlier / size breakdown, and confusion matrices
 
 See tracer/README.md for usage.
