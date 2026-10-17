@@ -11,10 +11,13 @@ Per image and inverse:
     tok_recovery   fraction of the 680 greedy tokens Q(D^-1(x)) equal to the true tokens
     inv_mse        mean (D^-1(x) - f_Z)^2, f_Z = _var_idx_to_fhat(true tokens): the Eq. 6 training loss per image
 
-Before scoring, the var24 holdout true tokens are checked for exact overlap with stage2/gen/var/var24 (the data a
-var24-only D^-1 is trained on); the script stops if any sequence appears in both.
+Before scoring, the 512 var24 holdout samples are checked for exact overlap, by token sequence and by image bytes,
+with <dir>/var/var24 for each --overlap-data dir (default: stage2/gen, the data a var24-only D^-1 is trained on);
+the script stops if any sample appears in both.
 
     python scripts/score_stage5_pilot.py --single single5=/workspace/cache/stage5/inv/var24_5ep/final.pt
+    python scripts/score_stage5_pilot.py --single singlefull=/workspace/cache/stage5/inv/var24_full/final.pt \
+        --overlap-data /workspace/cache/stage2/gen --overlap-data /workspace/cache/stage5/gen
     python scripts/score_stage5_pilot.py --limit 16 --out /tmp/stage5_dry/scores.csv     # quick check
 
 Writes the long-format CSV --out (label, index, inverse, quant, enc1, enc2, cal, comb, tok_match, tok_recovery,
@@ -26,6 +29,7 @@ and other batch sizes change about 1 recovered token in 1e5. Recovered tokens ca
 (extracted with TF32) by a few percent; mean token recovery agrees.
 """
 import argparse
+import hashlib
 import json
 import shlex
 import subprocess
@@ -62,7 +66,7 @@ def load_holdout(limit, log):
     """Holdout images, labels, indices and true tokens, in gen.npz row order (label, then index).
 
     limit keeps the first N holdout rows (by index) of each depth. Returns a dict of numpy arrays and the full
-    (unlimited) var24 holdout true tokens for the overlap check.
+    (unlimited) var24 holdout true tokens and images for the overlap check.
     """
     split = pd.read_csv(CACHE / "stage3" / "gen_split.csv")
     hold = split[(split.family == FAMILY) & (split.split == "holdout")][["label", "index"]]
@@ -75,17 +79,18 @@ def load_holdout(limit, log):
     gpos = pd.DataFrame({"label": g["label"], "index": g["index"], "gpos": np.arange(len(g["label"]))})
     hold = hold.merge(gpos, on=["label", "index"], how="left", validate="1:1")
     assert hold.gpos.notna().all(), "holdout rows missing from gen.npz"
-    full_v24 = g["true_tokens"][hold.gpos[hold.label == OVERLAP_MODEL].astype(int).to_numpy()]
-
-    if limit:
-        hold = hold.groupby("label", sort=False).head(limit).reset_index(drop=True)
-    gp = hold.gpos.astype(int).to_numpy()
 
     data = load_generated(CACHE / "stage3" / "gen", FAMILY)
     dpos = pd.DataFrame({"label": data["label"], "index": data["index"], "dpos": np.arange(len(data["label"]))})
     hold = hold.merge(dpos, on=["label", "index"], how="left", validate="1:1")
     assert hold.dpos.notna().all(), "holdout rows missing from stage3/gen"
-    dp = hold.dpos.astype(int).to_numpy()
+    v24 = hold[hold.label == OVERLAP_MODEL]
+    full_v24 = {"tokens": g["true_tokens"][v24.gpos.astype(int).to_numpy()],
+                "images": data["images"][v24.dpos.astype(int).to_numpy()]}
+
+    if limit:
+        hold = hold.groupby("label", sort=False).head(limit).reset_index(drop=True)
+    gp, dp = hold.gpos.astype(int).to_numpy(), hold.dpos.astype(int).to_numpy()
 
     true_tokens = g["true_tokens"][gp].astype(np.int64)
     assert np.array_equal(true_tokens, data["tokens"][dp]), "gen.npz true_tokens differ from stage3/gen tokens"
@@ -95,14 +100,27 @@ def load_holdout(limit, log):
             "stored_tokens": g["tokens"][gp].astype(np.int64)}, full_v24
 
 
-def check_overlap(holdout_v24: np.ndarray, log):
-    """Assert no var24 holdout true-token sequence of stage3 appears in stage2/gen/var/var24."""
-    s2 = load_generated(CACHE / "stage2" / "gen", FAMILY, models=[OVERLAP_MODEL])["tokens"]
-    s2_keys = {r.tobytes() for r in s2.astype(np.int16)}
-    n = sum(r.tobytes() in s2_keys for r in holdout_v24.astype(np.int16))
-    log(f"overlap check: {n} of {len(holdout_v24)} stage3 {OVERLAP_MODEL} holdout token sequences appear among "
-        f"{len(s2)} stage2/gen {OVERLAP_MODEL} sequences")
-    assert n == 0, f"{n} stage3 {OVERLAP_MODEL} holdout sequences also appear in stage2/gen"
+def _image_key(img: np.ndarray) -> bytes:
+    return hashlib.sha1(np.ascontiguousarray(img).tobytes()).digest()
+
+
+def check_overlap(holdout: dict, dirs, log):
+    """Assert no stage3 var24 holdout sample appears in any <dir>/var/var24, by token sequence or by image bytes."""
+    hold_tok = [r.tobytes() for r in holdout["tokens"].astype(np.int16)]
+    hold_img = [_image_key(im) for im in holdout["images"]]
+    for d in dirs:
+        paths = sorted((Path(d) / FAMILY / OVERLAP_MODEL).glob("shard_*.npz"))
+        assert paths, f"no {OVERLAP_MODEL} shards under {d}"
+        tok, img = set(), set()
+        for p in paths:  # one shard at a time, so only the keys stay in memory
+            z = np.load(p)
+            tok.update(r.tobytes() for r in z["tokens"].astype(np.int16))
+            img.update(_image_key(im) for im in z["images"])
+        n_tok, n_img = sum(k in tok for k in hold_tok), sum(k in img for k in hold_img)
+        log(f"overlap check {d}: {n_tok} token sequences and {n_img} images of the {len(hold_tok)} stage3 "
+            f"{OVERLAP_MODEL} holdout samples appear among its {len(tok)} distinct sequences / {len(img)} images "
+            f"({len(paths)} shards)")
+        assert n_tok == 0 and n_img == 0, f"stage3 {OVERLAP_MODEL} holdout samples also appear in {d}"
 
 
 def git_state():
@@ -156,7 +174,11 @@ def main():
     ap.add_argument("--batch-size", type=int, default=64, help="images per GPU batch")
     ap.add_argument("--limit", type=int, default=None, help="debug: only the first N holdout images of each depth")
     ap.add_argument("--out", type=Path, default=CACHE / "stage5" / "scores.csv", help="output CSV")
+    ap.add_argument("--overlap-data", type=Path, action="append", default=None, metavar="DIR",
+                    help="generated set (<DIR>/var/var24/shard_*.npz) that must not contain any stage3 var24 holdout "
+                         "sample (repeatable; default: stage2/gen)")
     args = ap.parse_args()
+    args.overlap_data = args.overlap_data or [CACHE / "stage2" / "gen"]
 
     def log(s):
         print(s, flush=True)
@@ -193,7 +215,7 @@ def main():
         return
 
     hold, full_v24 = load_holdout(args.limit, log)
-    check_overlap(full_v24, log)
+    check_overlap(full_v24, args.overlap_data, log)
     log(f"scoring {len(hold['label'])} images under {[n for n, _ in todo]} on {DEVICE}")
     commit, dirty = git_state()
     command = shlex.join([sys.executable] + sys.argv)

@@ -12,7 +12,8 @@ Long-running jobs. Run them in tmux with the project environment, and they write
 | [estimate_classes.py](estimate_classes.py) | 4 | top-10 ImageNet classes of task and generated images, from a pretrained classifier |
 | [score_likelihood.py](score_likelihood.py) | 4 | per-token log-likelihoods of each image's tokens under each of its family's 4 transformers |
 | [score_stage5_pilot.py](score_stage5_pilot.py) | 5 | signals, token recovery and $D^{-1}$ inversion error of the VAR generated holdout under several inverse decoders |
-| [run_stage5_pilot.sh](run_stage5_pilot.sh) | 5 | the Stage 5 pilot: var24-only $D^{-1}$ for 5 and 20 epochs, then `score_stage5_pilot.py` |
+| [run_stage5_pilot.sh](run_stage5_pilot.sh) | 5 | the Stage 5 pilot: var24-only $D^{-1}$s (5 and 20 epochs on stage2 data; 5 epochs on 9,840 images with new data), then `score_stage5_pilot.py` |
+| [assemble_stage5_gen.py](assemble_stage5_gen.py) | 5 | symlink stage2's var24 shards and newly generated var24 shards into one generated set, with seed and source checks |
 
 ## extract_features.py
 
@@ -97,7 +98,7 @@ This runs generation → fine-tuning → feature extraction for both families, w
 | `--seed` | 0 | base seed |
 | `--out` | `/workspace/cache/stage2/gen` | output directory |
 
-Output: `<out>/<family>/<label>/shard_XXXX.npz` with `tokens` [n,L] int16 (L = 256 for RAR, 680 for VAR), `images` [n,3,256,256] uint8 and `classes` [n], plus `<out>/<family>/config.json`. Classes cycle through the 1000 ImageNet classes in a fixed shuffled order. With the same seed and batch size, shards are bit-identical, so a larger `--per-model` only adds shards.
+Output: `<out>/<family>/<label>/shard_XXXX.npz` with `tokens` [n,L] int16 (L = 256 for RAR, 680 for VAR), `images` [n,3,256,256] uint8 and `classes` [n], plus `<out>/<family>/config.json`. Classes cycle through the 1000 ImageNet classes in a fixed shuffled order. With the same seed and batch size, shards are bit-identical on the same GPU and software, so a larger `--per-model` only adds shards. On another GPU the class order is the same but the samples differ (regenerating on the H100 matches only 50% of the A40's 1x1-scale tokens), so extend an existing directory only on the hardware that wrote it.
 
 Speed at batch 64 (ms per image): RAR-B / L / XL / XXL 157 / 198 / 305 / 415; VAR-d16 / 20 / 24 / 30 48 / 58 / 78 / 108. VAR-d30 needs 38 GB of GPU memory.
 
@@ -301,15 +302,44 @@ Measured on the A40, fp32, `--batch-size 32`: about 100 ms per (image, class) fo
 ### run_stage5_pilot.sh
 
 ```bash
-SMOKE=1 bash scripts/run_stage5_pilot.sh                    # 1 epoch on 32 images, --limit 16; about 3 min
+SMOKE=1 bash scripts/run_stage5_pilot.sh                    # 1 epoch on 32 images, 1 new shard, --limit 16; about 4 min
 tmux new -s stage5 'bash scripts/run_stage5_pilot.sh'
 ```
 
-Fine-tunes a var24-only $D^{-1}$ (`finetune_inverse.py --models var24`) for 5 epochs (`inv/var24_5ep`) and for 20 epochs (`inv/var24_20ep`, the same 3,075 optimizer steps as the shared inverse's 5 epochs on all four depths), with every other setting as in `stage2/inv/var/config.json`, then scores `E`, `shared`, `single5` and `single20` into `scores.csv`. Outputs and logs (`logs/`) go to `/workspace/cache/stage5`. Training steps are skipped if `final.pt` exists and scoring if `scores.config.json` lists all four inverses; interrupted steps resume. `SMOKE=1` writes to `/workspace/cache/stage5_smoke` instead (40 images per model with the last 8 held out, 1 epoch for both runs, scoring `--limit 16`).
+Steps, each skipped if its output exists (interrupted steps resume); outputs and logs (`logs/`) go to `/workspace/cache/stage5`:
+
+1. `inv/var24_5ep`, `inv/var24_20ep`: `finetune_inverse.py --models var24` on `stage2/gen` (2,460 training images) for 5 epochs (770 optimizer steps) and 20 epochs (3,080 steps; the shared inverse took 3,075).
+2. `gen_extra/`: 7,680 new var24 images (`generate_finetune_data.py --models var24 --seed 10 --per-model 7680`, 15 shards), after `assemble_stage5_gen.py --seed-check-only` has confirmed that none of seed 10's derived RNG seeds was used for `stage2/gen` (seed 0) or `stage3/gen` (seed 1). Skipped if the last shard exists.
+3. `gen/`: `assemble_stage5_gen.py` symlinks the 5 var24 shards of `stage2/gen` (`shard_0000-0004`) and the 15 new ones (`shard_0005-0019`), so `load_generated(stage5/gen, "var")` returns 10,240 var24 rows with index 0..10239; `gen/var/config.json` records the composition. Skipped if that file exists.
+4. `inv/var24_full`: `finetune_inverse.py --data stage5/gen --models var24 --max-per-model 9940`, 5 epochs: 9,840 training images (index 0..9,839) and 100 held out, 3,075 steps, as for the shared inverse.
+5. `scores.csv`: `E`, `shared`, `single5`, `single20` and `singlefull`, with the holdout checked against `stage2/gen` and `stage5/gen` (`--overlap-data`). Inverses already scored are skipped by `score_stage5_pilot.py`.
+
+Every fine-tuning setting other than `--data`, `--models`, `--max-per-model`, `--epochs` and `--out` is as in `stage2/inv/var/config.json`. Nothing is written to `stage2/gen` or `stage3/gen`. `SMOKE=1` writes to `/workspace/cache/stage5_smoke` instead: 40 images per model with the last 8 held out, 1 epoch for every run, 1 new shard (512 images), scoring `--limit 16`.
+
+Images generated on the H100 are decoded slightly differently from the A40 ones in `stage2/gen` and `stage3/gen`: re-decoding stored tokens on the H100 changes 1.3% of uint8 pixel values, almost all by one level, less than changing the batch size on the H100 alone (1.9%).
+
+### assemble_stage5_gen.py
+
+```bash
+/workspace/venv/bin/python scripts/assemble_stage5_gen.py --seed-check-only --extra-seed 10 --expect-extra 15
+/workspace/venv/bin/python scripts/assemble_stage5_gen.py --expect-extra 15
+```
+
+| argument | default | meaning |
+|---|---|---|
+| `--label` | `var24` | model folder to assemble |
+| `--base` | `/workspace/cache/stage2/gen` | first source; its shards come first |
+| `--extra` | `/workspace/cache/stage5/gen_extra` | second source (`generate_finetune_data.py --out`) |
+| `--expect-extra` | required | number of shards the second source must have |
+| `--used` | `stage2/gen stage3/gen` | generated sets whose derived seeds (class shuffle `seed + model position`, per-shard `seed * 1000003 + position * 10007 + shard`) must not be reused |
+| `--seed-check-only`, `--extra-seed` | off | only check a planned seed against `--used` |
+| `--out` | `/workspace/cache/stage5/gen` | output; only symlinks and `var/config.json` are written |
+
+Checks before linking: same family, shard size and batch size; shard files without gaps and with `--shard-size` samples each; each source's classes equal the generator's class cycling for its seed; no derived seed collision. `var/config.json` holds the sources (directory, seed, batch size, shards, rows, GPU, output shard and index ranges), the seed check, the time, git commit and command. Rerunning with the same composition does nothing; a different one exits.
 
 ### score_stage5_pilot.py
 
-Scores the VAR holdout of the fresh generated set (holdout rows of `stage3/gen_split.csv`, 512 per depth, images from `stage3/gen`, true tokens from `stage3/tokens/var/gen.npz` matched by label and index) under several inverse decoders: `E` (the original encoder), `shared` (`stage2/inv/var/final.pt`, trained on all four depths) and each `--single NAME=PATH` (for example a $D^{-1}$ trained on var24 only with `finetune_inverse.py --models var24`). Before scoring, it asserts that no var24 holdout true-token sequence also appears in `stage2/gen/var/var24`.
+Scores the VAR holdout of the fresh generated set (holdout rows of `stage3/gen_split.csv`, 512 per depth, images from `stage3/gen`, true tokens from `stage3/tokens/var/gen.npz` matched by label and index) under several inverse decoders: `E` (the original encoder), `shared` (`stage2/inv/var/final.pt`, trained on all four depths) and each `--single NAME=PATH` (for example a $D^{-1}$ trained on var24 only with `finetune_inverse.py --models var24`). Before scoring, it asserts that none of the 512 var24 holdout samples appears, by token sequence or by image bytes, in `<DIR>/var/var24` of any `--overlap-data` directory.
 
 ```bash
 /workspace/venv/bin/python scripts/finetune_inverse.py --family var --epochs 5 --models var24 \
@@ -320,6 +350,7 @@ Scores the VAR holdout of the fresh generated set (holdout rows of `stage3/gen_s
 | argument | default | meaning |
 |---|---|---|
 | `--single NAME=PATH` | none | a fine-tuned $D^{-1}$ checkpoint scored as inverse `NAME` (repeatable; `E` and `shared` are reserved) |
+| `--overlap-data DIR` | `/workspace/cache/stage2/gen` | generated set that must not contain any var24 holdout sample (repeatable) |
 | `--batch-size` | 64 | images per GPU batch (keep it fixed across runs that will be compared) |
 | `--limit N` | none | debug: the first N holdout images of each depth |
 | `--out` | `/workspace/cache/stage5/scores.csv` | output CSV |

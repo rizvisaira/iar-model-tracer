@@ -3,7 +3,9 @@
 All sizes of a family share the tokenizer, and the task's images come from all of them, so one D^-1 per family is
 fine-tuned on an equal mix of every size's samples. Classes cycle through the 1000 ImageNet classes in a fixed
 random order per model. Shards are resumable and deterministic (seeded per model and shard; bit-identical for the
-same --seed and --batch-size), and always hold --shard-size samples, so a larger --per-model later only adds shards.
+same --seed and --batch-size on the same GPU and software), and always hold --shard-size samples, so a larger
+--per-model later only adds shards. On a different GPU the class order is the same but the samples are not
+(A40 -> H100: 50% of 1x1-scale tokens and almost none of the finer scales agree).
 
     python scripts/generate_finetune_data.py --family rar --per-model 2500
     python scripts/generate_finetune_data.py --family var --per-model 2500
@@ -44,7 +46,8 @@ def main():
 
     # Record the configuration; refuse to resume shards written with different settings.
     # --per-model may grow between runs (shards are a deterministic prefix), so it is not part of the check.
-    # --batch-size is: the samples drawn depend on it (same seed and batch size -> bit-identical shards).
+    # --batch-size is: the samples drawn depend on it (same seed and batch size -> bit-identical shards on the same
+    # GPU and software).
     fam_dir = args.out / args.family
     fam_dir.mkdir(parents=True, exist_ok=True)
     cfg = {"family": args.family, "shard_size": args.shard_size, "batch_size": args.batch_size, "seed": args.seed}
