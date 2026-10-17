@@ -1,0 +1,25 @@
+inverse,role,criterion,quantity,value,threshold,ci_lo,ci_hi,pass
+single5,primary,C1,var24: inv_mse reduction 1 - mean_single5 / mean_shared,-0.12427846253915398,0.1,-0.1267109486529477,-0.12188828532816091,False
+single5,primary,C1,var24: tok_recovery single5 - shared (points),-1.2663718036492355,3.0,-1.4424906142085092,-1.112376480778039,False
+single5,primary,C2,"AUC(-cal) var24 vs var20, single5",0.5189018249511719,0.75,0.48420209884643556,0.5577190399169922,False
+single5,primary,C2,"AUC(-cal) var24 vs var20, single5 - shared",0.01351165771484375,0.1,-0.030651092529296875,0.0545328140258789,False
+single5,primary,C2,"AUC(-cal) var24 vs var30, single5",0.49251556396484375,0.75,0.4586541175842285,0.5291216850280762,False
+single5,primary,C2,"AUC(-cal) var24 vs var30, single5 - shared",-0.00984954833984375,0.1,-0.05249805450439453,0.03419294357299802,False
+single5,primary,C1,C1: either component passes,,,,,False
+single5,primary,C2,C2: all four components pass,,,,,False
+single20,secondary,C1,var24: inv_mse reduction 1 - mean_single20 / mean_shared,-0.04223876207878696,0.1,-0.04299230562277501,-0.04143934192448271,False
+single20,secondary,C1,var24: tok_recovery single20 - shared (points),-0.3188189373759087,3.0,-0.4799589077447308,-0.15596282541082473,False
+single20,secondary,C2,"AUC(-cal) var24 vs var20, single20",0.5342674255371094,0.75,0.4996042251586914,0.5687109947204589,False
+single20,secondary,C2,"AUC(-cal) var24 vs var20, single20 - shared",0.02887725830078125,0.1,-0.0135345458984375,0.0697977066040039,False
+single20,secondary,C2,"AUC(-cal) var24 vs var30, single20",0.5077228546142578,0.75,0.47190036773681643,0.5413423538208008,False
+single20,secondary,C2,"AUC(-cal) var24 vs var30, single20 - shared",0.0053577423095703125,0.1,-0.039060020446777345,0.05169677734375,False
+single20,secondary,C1,C1: either component passes,,,,,False
+single20,secondary,C2,C2: all four components pass,,,,,False
+singlefull,exploratory,C1,var24: inv_mse reduction 1 - mean_singlefull / mean_shared,-0.00229708745381374,0.1,-0.0027301463807942296,-0.0018060442261620623,False
+singlefull,exploratory,C1,var24: tok_recovery singlefull - shared (points),-0.04968981666024774,3.0,-0.20652139173762407,0.10690488670661574,False
+singlefull,exploratory,C2,"AUC(-cal) var24 vs var20, singlefull",0.47161865234375,0.75,0.436461353302002,0.5047842979431152,False
+singlefull,exploratory,C2,"AUC(-cal) var24 vs var20, singlefull - shared",-0.033771514892578125,0.1,-0.07939558029174805,0.011106300354003899,False
+singlefull,exploratory,C2,"AUC(-cal) var24 vs var30, singlefull",0.47701263427734375,0.75,0.4420459747314453,0.5135558128356933,False
+singlefull,exploratory,C2,"AUC(-cal) var24 vs var30, singlefull - shared",-0.02535247802734375,0.1,-0.06909523010253907,0.016888427734375,False
+singlefull,exploratory,C1,C1: either component passes,,,,,False
+singlefull,exploratory,C2,C2: all four components pass,,,,,False
